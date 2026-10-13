@@ -1,0 +1,4 @@
+-dontwarn org.bouncycastle.**
+-dontwarn javax.naming.**
+-dontwarn javax.mail.**
+-dontwarn javax.activation.**

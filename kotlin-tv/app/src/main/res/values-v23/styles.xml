@@ -1,0 +1,13 @@
+<resources>
+    <!-- android:windowLightStatusBar is API 23+. A qualifier-specific style REPLACES the base
+         definition rather than merging into it, so the whole style (parent plus every item)
+         must be repeated here, otherwise API 23+ devices lose the theme entirely. -->
+    <style name="AppTheme" parent="android:style/Theme.Material.NoActionBar">
+        <item name="android:fontFamily">sans</item>
+        <item name="android:windowActionModeOverlay">true</item>
+        <item name="android:colorAccent">#FF8964</item>
+        <item name="android:windowBackground">#0B0F15</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:windowNoTitle">true</item>
+    </style>
+</resources>

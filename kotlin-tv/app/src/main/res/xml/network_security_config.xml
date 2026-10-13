@@ -1,0 +1,4 @@
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false"/>
+    <domain-config cleartextTrafficPermitted="true"><domain includeSubdomains="true">douyinvod.com</domain><domain includeSubdomains="true">byteicdn.com</domain><domain includeSubdomains="true">byteimg.com</domain></domain-config>
+</network-security-config>
