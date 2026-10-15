@@ -90,6 +90,14 @@ export const provider = {
       api.videoInfoCache.delete(id);
     }
     const stream = await api.resolveStream(id, "auto");
+    // 公开直链（public）：无加密，直接做 Range 代理，跳过 CENC 头预取与逐样本解密。
+    if (stream.public) {
+      return {
+        total: stream.total || 0,
+        chunk: async (start, end) =>
+          (await api.remoteRange(stream, start, end)).data,
+      };
+    }
     const prepared = await api.prepareHeader(stream);
     return {
       total: prepared.total,

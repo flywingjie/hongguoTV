@@ -673,7 +673,25 @@ function decryptPartial(data, start, key, prepared) {
 
 // ---------- 播放流解析与 Range 代理 ----------
 
+async function resolvePublicStream(vid, quality) {
+    const v = str(vid);
+    if (!/^\d{10,}$/.test(v)) throw new Error('vid 非法');
+    // 网站自身对多数单集开放的免签名直链：/video/public/<vid>/360p.mp4
+    const url = `${SITE}/video/public/${v}/360p.mp4`;
+    const resp = await axios(url, {
+        headers: { 'User-Agent': VIDEO_UA, Referer: `${SITE}/player/`, Accept: 'video/mp4,*/*', Range: 'bytes=0-0' },
+        timeout: 15000, responseType: 'arraybuffer',
+    });
+    if (![200, 206].includes(resp.status)) throw new Error(`public stream ${resp.status}`);
+    const total = Number(String(resp.headers['content-range'] || '').split('/')[1] || resp.headers['content-length'] || 0) || 0;
+    if (!total) throw new Error('public stream 无长度');
+    return { url, quality: '360P', key: null, public: true, total, referer: `${SITE}/player/` };
+}
+
 async function resolveStream(vid, quality) {
+    // 公开直链优先（免签名，360p）：多数短剧/漫剧单集已开放，可直接播放，无需字节系签名。
+    // 不可达（受保护内容）时退回字节签名流；该路径上游契约已变（multi_video_model 恒定 110001），失败会冒泡为 502。
+    try { return await resolvePublicStream(vid, quality); } catch { /* 落到字节流兜底 */ }
     const cacheKey = playKey(vid, quality); const cached = streamCache.get(cacheKey); if (cached && Date.now() - cached.time < 300000) return cached.value;
     const { info, rows } = await fetchVideoInfo(vid); const wanted = str(quality, 'auto');
     const selected = rows.find((row) => row.key === wanted || qualityNumber(row.quality) === qualityNumber(wanted)) || rows[0]; if (!selected) throw new Error('没有可用清晰度');
@@ -685,7 +703,7 @@ async function resolveStream(vid, quality) {
 
 async function remoteRange(stream, start, end) {
     const resp = await axios(stream.url, {
-        headers: { 'User-Agent': VIDEO_UA, Referer: 'https://novel.snssdk.com/', Range: `bytes=${start}-${end}` },
+        headers: { 'User-Agent': VIDEO_UA, Referer: stream.referer || 'https://novel.snssdk.com/', Range: `bytes=${start}-${end}` },
         timeout: 30000, responseType: 'arraybuffer',
     });
     let data = Buffer.from(resp.data);
