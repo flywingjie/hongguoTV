@@ -13,8 +13,8 @@ android {
         // NOTE: Media3 must stay <= 1.8.1 (media3-exoplayer/media3-ui 1.9.0+ require API 23).
         minSdk = 21
         targetSdk = 36
-        versionCode = System.getenv("HONGGUOTV_VERSION_CODE")?.toInt() ?: 15
-        versionName = System.getenv("HONGGUOTV_VERSION_NAME") ?: "1.0.5"
+        versionCode = System.getenv("HONGGUOTV_VERSION_CODE")?.toInt() ?: 16
+        versionName = System.getenv("HONGGUOTV_VERSION_NAME") ?: "1.0.6"
     }
     buildFeatures { buildConfig = true }
     signingConfigs {

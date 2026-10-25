@@ -129,9 +129,51 @@ class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().connectT
         val lastPage=section.optJSONObject("pagination")?.optInt("totalPages",100) ?: 100
         return CatalogPage(items,items.isNotEmpty() && page<minOf(lastPage,100))
     }
+    // waligora 同款：免签名 novelfm bookmall 搜索 API（快），替代慢的 hongguoduanju 搜索页；失败回退原逻辑
+    private fun novelfmSearch(keyword: String, type: ContentType): CatalogPage {
+        val tabType = if (type == ContentType.COMIC) 13 else 10
+        val body = JSONObject().put("limit", 20).put("offset", 0).put("query", keyword)
+            .put("search_ctx_info", "")
+            .put("search_entrance", JSONObject().put("type", 1).put("tab_type", 39).put("default_tab_type", 10).put("bottom_type", 1).put("search_tab_id", tabType).toString())
+            .put("search_id", "").put("sub_tab_type", 31).put("tab_type", tabType).toString().toByteArray()
+        val url = "https://api5-sinfonlinea.novelfm.com/novelfm/bookmall/search/page/v1/?device_platform=android&aid=3040&manifest_version_code=628&update_version_code=62832"
+        val text = retryExecute({ http.newCall(Request.Builder().url(url)
+            .header("Content-Type", "application/json").header("Accept", "application/json")
+            .header("User-Agent", "HongguoTV-MetadataValidation/0.1")
+            .post(body.toRequestBody("application/json; charset=utf-8".toMediaType())).build()) }) { response ->
+            if (!response.isSuccessful) throw IOException("目录服务暂不可用（HTTP ${response.code}）")
+            val s = response.body?.string() ?: throw IOException("目录响应为空")
+            if (s.isBlank()) throw IOException("目录响应为空")
+            s
+        }
+        val data = JSONObject(text)
+        if (data.optInt("code", -1) != 0) throw IOException("目录服务暂无结果")
+        val searchData = data.optJSONObject("data")?.optJSONArray("search_data") ?: throw IOException("目录数据不完整")
+        val out = mutableListOf<Series>()
+        collectBooks(searchData, out, mutableSetOf())
+        return CatalogPage(valid(out), false)
+    }
+    private fun collectBooks(node: Any?, out: MutableList<Series>, seen: MutableSet<String>, depth: Int = 0) {
+        if (node == null || depth > 16) return
+        when (node) {
+            is JSONObject -> {
+                if (node.has("book_id") && node.has("book_name")) {
+                    val id = node.optString("book_id"); val name = node.optString("book_name")
+                    if (id.matches(Regex("[0-9]{8,24}")) && name.isNotBlank() && seen.add(id)) {
+                        val count = (node.opt("chapter_number")?.takeIf { it != JSONObject.NULL }?.toString()?.takeIf { it.isNotEmpty() }) ?: node.opt("serial_count")?.toString()?.takeIf { it.isNotEmpty() } ?: "0"
+                        val intro = node.optString("abstract", "")
+                        val cover = cleanUrl(node.optString("thumb_url", node.optString("thumb_pic", "")))
+                        out.add(Series(id, name, cover, intro, if (count != "0" && count.isNotEmpty()) "全 $count 集" else "", node.optString("tags", "").take(300)))
+                    }
+                } else node.keys().forEach { k -> collectBooks(node.opt(k), out, seen, depth + 1) }
+            }
+            is JSONArray -> for (i in 0 until node.length()) collectBooks(node.opt(i), out, seen, depth + 1)
+        }
+    }
     fun search(keyword: String, page: Int = 1, type: ContentType = ContentType.SHORT): CatalogPage {
         require(keyword.isNotBlank() && keyword.length<=80 && page in 1..100)
         // The website search does not constrain content type. Never use it for comics.
+        if(page==1) { try { return novelfmSearch(keyword, type) } catch(_: Exception) {} }
         if(type==ContentType.COMIC) return appSearch(keyword,page,type)
         try { val result=appSearch(keyword,page,type); if(result.items.isNotEmpty() || !result.hasMore) return result } catch (e: Exception) { if(e is SearchSessionExpiredException) throw e; /* Website fallback for short dramas only. */ }
         val data=router("$site/search/${Signer.encode(keyword)}?page=$page")
