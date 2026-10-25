@@ -24,13 +24,18 @@ data class CatalogPage(val items: List<Series>, val hasMore: Boolean, val rankin
 data class StreamInfo(val url: String, val key: ByteArray?, val quality: String)
 class SearchSessionExpiredException: IOException("搜索结果已过期，请从第 1 页重新搜索")
 
-class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().connectTimeout(15,TimeUnit.SECONDS).readTimeout(30,TimeUnit.SECONDS).callTimeout(45,TimeUnit.SECONDS).build(), private val clock: () -> Long = System::currentTimeMillis) {
+class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().connectTimeout(15,TimeUnit.SECONDS).readTimeout(30,TimeUnit.SECONDS).callTimeout(45,TimeUnit.SECONDS).build(), private val clock: () -> Long = System::currentTimeMillis, private val loadIdentity: () -> Pair<String,String>? = { null }, private val saveIdentity: (String, String) -> Unit = { _, _ -> }) {
     private val signer = Signer()
     private val site = "https://hongguoduanju.com"
     // waligora 0.5.9 逆向结论：multi_video_model 取播放地址不再走 X-Gorgon/X-Argus 签名，
     // 只需 version_code=73532 + 随机 19 位 device_id/iid + 正确 host/参数（PlayerRequestProfile 方案）。
-    private val playerDeviceId: String = run { val r=java.security.SecureRandom(); val sb=StringBuilder("1"); repeat(18){ sb.append(r.nextInt(10)) }; sb.toString() }
-    private val playerIid: String = run { val r=java.security.SecureRandom(); val sb=StringBuilder("1"); repeat(18){ sb.append(r.nextInt(10)) }; sb.toString() }
+    private fun newPlayerId(): String = run { val r=java.security.SecureRandom(); val sb=StringBuilder("1"); repeat(18){ sb.append(r.nextInt(10)) }; sb.toString() }
+    // 优先读持久化身份；没有则生成并回存（重启后保持稳定，抗服务端风控）。
+    private val playerIdentity: Pair<String,String> by lazy {
+        loadIdentity() ?: run { val a=newPlayerId(); val b=newPlayerId(); saveIdentity(a,b); a to b }
+    }
+    private val playerDeviceId: String get() = playerIdentity.first
+    private val playerIid: String get() = playerIdentity.second
     private fun playerModelUrl(): String = "https://api5-normal-sinfonlineb.fqnovel.com/novel/player/multi_video_model/v1/?aid=8662&app_name=novelread&version_code=73532&version_name=7.3.5.32&manifest_version_code=73532&update_version_code=73532&channel=update_64&device_platform=android&os=android&ssmix=a&device_type=25053RT47C&device_brand=Redmi&language=zh&os_api=36&os_version=16&resolution=1280*2772&dpi=520&ac=wifi&device_id=$playerDeviceId&iid=$playerIid"
     private fun playerPost(url: String, body: ByteArray): String {
         val request = Request.Builder().url(url)

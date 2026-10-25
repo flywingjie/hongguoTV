@@ -32,7 +32,13 @@ class MainActivity: Activity() {
     private val accent=TvStyle.accent; private val white=TvStyle.text; private val muted=TvStyle.muted
     private val main=Handler(Looper.getMainLooper())
     private val io=Executors.newFixedThreadPool(3)
-    private val repository=ContentRepository()
+    private val repository by lazy {
+        val prefs=applicationContext.getSharedPreferences("hongguo-player",android.content.Context.MODE_PRIVATE)
+        ContentRepository(
+            loadIdentity={ val d=prefs.getString("device_id",null); val i=prefs.getString("iid",null); if(d!=null&&i!=null) d to i else null },
+            saveIdentity={ d,i -> prefs.edit().putString("device_id",d).putString("iid",i).apply() }
+        )
+    }
     private val networkCleanup=Executors.newSingleThreadExecutor()
     private val prefetchWorker=Executors.newSingleThreadExecutor()
     private var prefetchHttp: okhttp3.OkHttpClient?=null
