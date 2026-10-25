@@ -4,6 +4,8 @@
 
 > 早期版本中的 React Native 客户端、`server/` Node bridge 服务与 Docker 部署方式已全部移除，统一收敛到这一个原生 APK 工程。
 
+> 本项目派生自上游开源项目 [N3urda/hongguoTV](https://github.com/N3urda/hongguoTV)（源码分支 `codex/kotlin-standalone`），在此基础上收敛为单一 Kotlin 原生 TV 工程，并针对红果官方接口变更持续适配。
+
 ## 快速开始
 
 - 功能、自动更新、故障排查等完整说明：见 [`kotlin-tv/README.md`](kotlin-tv/README.md)。
