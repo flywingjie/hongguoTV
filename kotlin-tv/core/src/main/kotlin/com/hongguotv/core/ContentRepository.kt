@@ -27,6 +27,25 @@ class SearchSessionExpiredException: IOException("搜索结果已过期，请从
 class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().connectTimeout(15,TimeUnit.SECONDS).readTimeout(30,TimeUnit.SECONDS).callTimeout(45,TimeUnit.SECONDS).build(), private val clock: () -> Long = System::currentTimeMillis) {
     private val signer = Signer()
     private val site = "https://hongguoduanju.com"
+    // waligora 0.5.9 逆向结论：multi_video_model 取播放地址不再走 X-Gorgon/X-Argus 签名，
+    // 只需 version_code=73532 + 随机 19 位 device_id/iid + 正确 host/参数（PlayerRequestProfile 方案）。
+    private val playerDeviceId: String = run { val r=java.security.SecureRandom(); val sb=StringBuilder("1"); repeat(18){ sb.append(r.nextInt(10)) }; sb.toString() }
+    private val playerIid: String = run { val r=java.security.SecureRandom(); val sb=StringBuilder("1"); repeat(18){ sb.append(r.nextInt(10)) }; sb.toString() }
+    private fun playerModelUrl(): String = "https://api5-normal-sinfonlineb.fqnovel.com/novel/player/multi_video_model/v1/?aid=8662&app_name=novelread&version_code=73532&version_name=7.3.5.32&manifest_version_code=73532&update_version_code=73532&channel=update_64&device_platform=android&os=android&ssmix=a&device_type=25053RT47C&device_brand=Redmi&language=zh&os_api=36&os_version=16&resolution=1280*2772&dpi=520&ac=wifi&device_id=$playerDeviceId&iid=$playerIid"
+    private fun playerPost(url: String, body: ByteArray): String {
+        val request = Request.Builder().url(url)
+            .header("User-Agent", VendorConstants.PLAYER_UA)
+            .header("Accept", "application/json")
+            .header("x-xs-from-web", "0")
+            .header("sdk-version", "2")
+            .header("Accept-Encoding", "identity")
+            .post(body.toRequestBody("application/json; charset=utf-8".toMediaType()))
+        return RequestScope.execute(http.newCall(request.build())) { response ->
+            if(!response.isSuccessful) throw IOException("播放接口请求失败（HTTP ${response.code}）")
+            val rb=response.body ?: throw IOException("播放接口响应为空")
+            String(rb.byteStream().readBytes(), Charsets.UTF_8)
+        }
+    }
     private data class SearchCursor(val searchId: String, val passback: String, val offset: Int?, val updatedAt: Long)
     private val searchCursors=linkedMapOf<Triple<ContentType,String,Int>,SearchCursor>()
     private fun text(url: String, signed: Signer.Request? = null): String {
@@ -125,10 +144,10 @@ class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().connectT
     }
     fun stream(id: String, maxQuality: Int = 1080): StreamInfo {
         require(id.matches(Regex("[0-9]{1,30}")))
-        val payload="""{"biz_param":{"detail_page_version":0,"device_level":3,"disable_digg_stat":false,"need_all_video_definition":true,"need_mp4_align":false,"use_os_player":false,"use_server_dns":false,"video_platform":1024},"mixed_video_id_map":{"1004":["$id"]}}""".toByteArray()
-        val signed=signer.sign("https://api5-normal-sinfonlineb.fqnovel.com/novel/player/multi_video_model/v1/",VendorConstants.device,payload)
-        val data=JSONObject(text(signed.url,signed))
-        if(data.optInt("Code",data.optInt("code",0))!=0) throw IOException("播放接口暂不可用")
+        val payload="""{"biz_param":{"detail_page_version":0,"device_level":3,"disable_digg_stat":false,"need_all_video_definition":true,"need_mp4_align":false,"use_os_player":false,"use_server_dns":false,"video_platform":1024},"mixed_video_id_map":{"1":["$id"]}}""".toByteArray()
+        val data=JSONObject(playerPost(playerModelUrl(),payload))
+        val code=data.optInt("Code",data.optInt("code",0))
+        if(code!=0) throw IOException("播放接口暂不可用（code=$code）")
         val map=data.optJSONObject("data") ?: throw IOException("播放信息为空")
         val entry=map.optJSONObject(id) ?: map.keys().asSequence().mapNotNull { map.optJSONObject(it) }.firstOrNull() ?: throw IOException("播放信息为空")
         val model=entry.optJSONObject("video_model") ?: JSONObject(entry.str("video_model"))
