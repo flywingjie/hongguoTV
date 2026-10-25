@@ -37,7 +37,7 @@ class MainActivity: Activity() {
         ContentRepository(
             loadIdentity={ val d=prefs.getString("device_id",null); val i=prefs.getString("iid",null); if(d!=null&&i!=null) d to i else null },
             saveIdentity={ d,i -> prefs.edit().putString("device_id",d).putString("iid",i).apply() }
-        )
+        ).also { it.warmup() }
     }
     private val networkCleanup=Executors.newSingleThreadExecutor()
     private val prefetchWorker=Executors.newSingleThreadExecutor()

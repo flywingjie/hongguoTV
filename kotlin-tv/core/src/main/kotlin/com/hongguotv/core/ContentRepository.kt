@@ -24,7 +24,7 @@ data class CatalogPage(val items: List<Series>, val hasMore: Boolean, val rankin
 data class StreamInfo(val url: String, val key: ByteArray?, val quality: String)
 class SearchSessionExpiredException: IOException("搜索结果已过期，请从第 1 页重新搜索")
 
-class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().connectTimeout(15,TimeUnit.SECONDS).readTimeout(30,TimeUnit.SECONDS).callTimeout(45,TimeUnit.SECONDS).build(), private val clock: () -> Long = System::currentTimeMillis, private val loadIdentity: () -> Pair<String,String>? = { null }, private val saveIdentity: (String, String) -> Unit = { _, _ -> }) {
+class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().connectTimeout(15,TimeUnit.SECONDS).readTimeout(30,TimeUnit.SECONDS).callTimeout(45,TimeUnit.SECONDS).connectionSpecs(listOf(okhttp3.ConnectionSpec.MODERN_TLS, okhttp3.ConnectionSpec.COMPATIBLE_TLS)).build(), private val clock: () -> Long = System::currentTimeMillis, private val loadIdentity: () -> Pair<String,String>? = { null }, private val saveIdentity: (String, String) -> Unit = { _, _ -> }) {
     private val signer = Signer()
     private val site = "https://hongguoduanju.com"
     // waligora 0.5.9 逆向结论：multi_video_model 取播放地址不再走 X-Gorgon/X-Argus 签名，
@@ -45,26 +45,44 @@ class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().connectT
             .header("sdk-version", "2")
             .header("Accept-Encoding", "identity")
             .post(body.toRequestBody("application/json; charset=utf-8".toMediaType()))
-        return RequestScope.execute(http.newCall(request.build())) { response ->
+        return retryExecute({ http.newCall(request.build()) }) { response ->
             if(!response.isSuccessful) throw IOException("播放接口请求失败（HTTP ${response.code}）")
             val rb=response.body ?: throw IOException("播放接口响应为空")
-            String(rb.byteStream().readBytes(), Charsets.UTF_8)
+            String(rb.byteStream().readBytes(), Charsets.UTF_8).also { if(it.isBlank()) throw IOException("播放接口响应为空") }
         }
     }
     private data class SearchCursor(val searchId: String, val passback: String, val offset: Int?, val updatedAt: Long)
     private val searchCursors=linkedMapOf<Triple<ContentType,String,Int>,SearchCursor>()
+    private fun retryable(e: IOException): Boolean {
+        val m=(e.message?:"unknown").lowercase()
+        return m.contains("502")||m.contains("503")||m.contains("504")||m.contains("timeout")||m.contains("timed out")||m.contains("unable to resolve")||m.contains("connection reset")||m.contains("connect failed")||m.contains("failed to connect")
+    }
+    private fun <T> retryExecute(callFactory: () -> okhttp3.Call, block: (okhttp3.Response) -> T): T {
+        var last: IOException? = null
+        var i = 0
+        while (i < 3) {
+            try { return RequestScope.execute(callFactory(), block) }
+            catch (e: IOException) {
+                last = e
+                if (i == 2 || !retryable(e)) throw e
+                try { Thread.sleep(400L * (i + 1)) } catch (ie: InterruptedException) { throw e }
+                i++
+            }
+        }
+        throw last ?: IOException("请求失败")
+    }
     private fun text(url: String, signed: Signer.Request? = null): String {
         val request = Request.Builder().url(url).header("User-Agent",VendorConstants.VIDEO_UA).header("Accept-Language","zh-CN,zh;q=0.9")
         signed?.headers?.forEach { (k,v) -> request.header(k,v) }
         signed?.body?.let { request.post(it.toRequestBody("application/json; charset=utf-8".toMediaType())) }
-        return RequestScope.execute(http.newCall(request.build())) { response ->
+        return retryExecute({ http.newCall(request.build()) }) { response ->
             if (!response.isSuccessful) throw IOException("内容请求失败（HTTP ${response.code}）")
             val body = response.body ?: throw IOException("内容响应为空")
             if (body.contentLength() > 16*1024*1024) throw IOException("内容响应过大")
             val input=body.byteStream(); val out=java.io.ByteArrayOutputStream(); val buffer=ByteArray(8192)
             while(out.size()<=16*1024*1024) { val n=input.read(buffer); if(n<0) break; out.write(buffer,0,n) }; val bytes=out.toByteArray()
             if(bytes.size > 16*1024*1024) throw IOException("内容响应过大")
-            String(bytes,Charsets.UTF_8)
+            String(bytes,Charsets.UTF_8).also { if(it.length<100) throw IOException("内容响应为空或过短(${it.length})") }
         }
     }
     private fun router(url: String) = extractRouter(text(url)).getJSONObject("loaderData")
@@ -75,9 +93,31 @@ class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().connectT
         return Series(o.str("series_id"),o.str("series_name").ifEmpty { o.str("series_title").ifEmpty { item.str("name") } },cleanUrl(o.str("series_cover")),o.str("series_intro"),o.str("episode_right_text").ifEmpty { if(count>0) "全 ${count} 集" else "" },(0 until minOf(tags.length(),5)).joinToString(" · ") { tags.optJSONObject(it)?.str("name") ?: tags.optString(it) })
     }
     private fun valid(rows: List<Series>) = rows.filter { it.id.matches(Regex("[0-9]{1,30}")) && it.title.isNotBlank() }.distinctBy { it.id }
+    fun warmup() {
+        Thread {
+            // 预热并把排行榜拉入缓存：首次进入即命中缓存，不用干等慢请求
+            runCatching { for(i in 0 until 4){ try { if(comicRanking(1).items.isNotEmpty()) break } catch(_: Exception) {} } }
+            // 预热 fqnovel（multi_video_model 首连）
+            runCatching {
+                for(i in 0 until 6) {
+                    try { http.newCall(Request.Builder().url("https://api5-normal-sinfonlineb.fqnovel.com/").header("User-Agent",VendorConstants.PLAYER_UA).build()).execute().use { }; break } catch(_: Exception) {}
+                    try { Thread.sleep(700) } catch(_: Exception) {}
+                }
+            }
+        }.start()
+    }
+    private val rankingCache = linkedMapOf<Int, Pair<Long,CatalogPage>>()
+    private var lastReqAt = 0L
+    private fun throttle() { val wait=lastReqAt+1200-clock(); if(wait>0) Thread.sleep(wait); lastReqAt=clock() }
     fun comicRanking(page: Int = 1): CatalogPage {
         require(page in 1..100)
-        return ComicRank.parse(text("$site/rank/hot-comic-drama?page=$page"),page)
+        synchronized(rankingCache){ rankingCache[page]?.takeIf { clock()-it.first<600000 } }?.let { return it.second }
+        throttle()
+        return try {
+            ComicRank.parse(text("$site/rank/hot-comic-drama?page=$page"),page).also { r -> synchronized(rankingCache){ rankingCache[page]=clock() to r; if(rankingCache.size>10) rankingCache.remove(rankingCache.keys.first()) } }
+        } catch (e: IOException) {
+            synchronized(rankingCache){ rankingCache[page]?.second } ?: throw e
+        }
     }
     fun home(page: Int = 1, type: ContentType = ContentType.SHORT): CatalogPage {
         require(page in 1..100)
